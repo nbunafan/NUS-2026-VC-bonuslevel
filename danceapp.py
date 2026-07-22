@@ -815,14 +815,16 @@ class PoseApp:
         h, w = frame.shape[:2]
         if now - self.last_fruit_spawn > 1.6 and len(self.fruits) < 3:
             expected_side = pose_side(self.next_reference_pose)
-            # Most fruit supports the upcoming reference gesture. Occasional opposite-side
-            # fruit is worth less, so it is a choice rather than a reason to abandon the dance.
+            # Most fruit supports the upcoming reference gesture. An object deliberately
+            # placed on the opposite side becomes a bomb, teaching the player not to abandon
+            # the dance direction merely to chase every moving target.
             fruit_side = expected_side if expected_side and random.random() < 0.75 else random.choice(("left", "right"))
+            object_kind = "bomb" if expected_side is not None and fruit_side != expected_side else "fruit"
             x_range = (55, max(70, w // 2 - 35)) if fruit_side == "left" else (min(w - 70, w // 2 + 35), w - 55)
             x = random.randint(*x_range)
             y = random.randint(80, max(100, h - 100))
             colors = [(70, 95, 255), (70, 210, 125), (40, 185, 245)]
-            self.fruits.append([x, y, 24, now, fruit_side, expected_side, random.choice(colors)])
+            self.fruits.append([x, y, 24, now, fruit_side, expected_side, random.choice(colors), object_kind])
             self.last_fruit_spawn = now
 
         wrists = []
@@ -843,25 +845,45 @@ class PoseApp:
             cv2.line(frame, trail[index - 1][:2], trail[index][:2], (255, int(180 + 70 * alpha), 70), max(1, int(5 * alpha)), cv2.LINE_AA)
 
         remaining = []
-        for x, y, radius, born, fruit_side, expected_side, color in self.fruits:
+        for x, y, radius, born, fruit_side, expected_side, color, object_kind in self.fruits:
             hit = any(np.hypot(wx - x, wy - y) < radius + 28 for wx, wy in wrists)
             expired = now - born > 5.0
             if hit:
                 with self.lock:
-                    self.fruit_combo = self.fruit_combo + 1 if now - self.last_fruit_hit <= 2.2 else 1
-                    multiplier = 1.0 + min(self.fruit_combo - 1, 8) * 0.30
-                    alignment = 1.0 if expected_side is None or fruit_side == expected_side else 0.60
-                    gained = int(round(20 * multiplier * alignment))
-                    self.fruit_points += gained
+                    if object_kind == "bomb":
+                        # A bomb costs more when it breaks a strong combo, but the capped
+                        # penalty and zero floor keep one mistake from ruining the whole run.
+                        penalty = min(50, 25 + min(self.fruit_combo, 5) * 5)
+                        self.fruit_points = max(0.0, self.fruit_points - penalty)
+                        self.fruit_combo = 0
+                        self.last_fruit_hit = 0.0
+                        gained = -penalty
+                    else:
+                        self.fruit_combo = self.fruit_combo + 1 if now - self.last_fruit_hit <= 2.2 else 1
+                        multiplier = 1.0 + min(self.fruit_combo - 1, 8) * 0.30
+                        gained = int(round(20 * multiplier))
+                        self.fruit_points += gained
+                        self.last_fruit_hit = now
                     self.bonus_points = int(self.fruit_points)
-                    self.last_fruit_hit = now
-                cv2.putText(frame, f"+{gained}  x{self.fruit_combo}", (x - 38, y), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (70, 240, 255), 2, cv2.LINE_AA)
+                result_text = f"BOOM {gained}" if object_kind == "bomb" else f"+{gained}  x{self.fruit_combo}"
+                result_color = (40, 60, 255) if object_kind == "bomb" else (70, 240, 255)
+                cv2.putText(frame, result_text, (x - 48, y), cv2.FONT_HERSHEY_SIMPLEX, 0.72, result_color, 2, cv2.LINE_AA)
             elif not expired:
-                remaining.append([x, y, radius, born, fruit_side, expected_side, color])
-                cv2.circle(frame, (x, y), radius, color, -1, cv2.LINE_AA)
-                cv2.circle(frame, (x, y), radius, (245, 250, 255), 2, cv2.LINE_AA)
-                cv2.ellipse(frame, (x + 6, y - radius + 3), (8, 4), -25, 0, 360, (70, 205, 105), -1, cv2.LINE_AA)
-                cv2.line(frame, (x - radius + 5, y + radius - 5), (x + radius - 5, y - radius + 5), (255, 255, 255), 2, cv2.LINE_AA)
+                remaining.append([x, y, radius, born, fruit_side, expected_side, color, object_kind])
+                if object_kind == "bomb":
+                    cv2.circle(frame, (x, y), radius, (26, 29, 34), -1, cv2.LINE_AA)
+                    cv2.circle(frame, (x, y), radius, (110, 118, 128), 3, cv2.LINE_AA)
+                    cv2.line(frame, (x - 9, y - 9), (x + 9, y + 9), (45, 70, 255), 4, cv2.LINE_AA)
+                    cv2.line(frame, (x + 9, y - 9), (x - 9, y + 9), (45, 70, 255), 4, cv2.LINE_AA)
+                    cv2.line(frame, (x + 10, y - radius + 4), (x + 18, y - radius - 10), (75, 120, 190), 3, cv2.LINE_AA)
+                    spark = (x + 20, y - radius - 13)
+                    cv2.circle(frame, spark, 5, (30, 210, 255), -1, cv2.LINE_AA)
+                    cv2.circle(frame, spark, 2, (230, 250, 255), -1, cv2.LINE_AA)
+                else:
+                    cv2.circle(frame, (x, y), radius, color, -1, cv2.LINE_AA)
+                    cv2.circle(frame, (x, y), radius, (245, 250, 255), 2, cv2.LINE_AA)
+                    cv2.ellipse(frame, (x + 6, y - radius + 3), (8, 4), -25, 0, 360, (70, 205, 105), -1, cv2.LINE_AA)
+                    cv2.line(frame, (x - radius + 5, y + radius - 5), (x + radius - 5, y - radius + 5), (255, 255, 255), 2, cv2.LINE_AA)
             else:
                 with self.lock:
                     self.fruit_combo = 0

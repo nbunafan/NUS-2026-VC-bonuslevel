@@ -48,7 +48,8 @@ dance points += keyframe similarity
 
 If keyframe similarity is at least 70, dance combo increases and awards up to 20 additional
 points. Between keyframes, continuity contributes only `2.5%` of its similarity per sampled
-camera pose. Important poses therefore dominate; matching every ordinary frame does not.
+camera pose for feedback only and does not add points. Important poses therefore fully
+determine the Dance total; matching every ordinary frame cannot inflate the score.
 
 ## 4. Fruit placement and movement conflict
 
@@ -56,15 +57,16 @@ The upcoming reference pose determines which wrist is extended furthest from the
 center. Fruit has a 75% probability of appearing on that side. This supports, rather than
 contradicts, the expected dance gesture.
 
-Occasional opposite-side fruit remains as an optional challenge:
+An object spawned on the opposite side is displayed as a bomb. It is intentionally unsafe to
+slice because chasing it would move the player away from the expected choreography.
 
 ```text
-aligned fruit weight  = 1.00
-opposite fruit weight = 0.60
+correct-side fruit = 20 base points with Fruit Combo
+opposite-side bomb = -(25 + 5 * min(current combo, 5)), capped at -50
 ```
 
-Missing or ignoring opposite-side fruit never reduces Dance points. The player can prioritize
-the choreography without being punished.
+Ignoring a bomb has no penalty. Slicing one resets Fruit Combo and subtracts up to 50 Fruit
+points, with a zero floor. Bombs never reduce Dance points or reset Dance Combo.
 
 ## 5. Fruit combo
 
@@ -72,10 +74,10 @@ A hit within 2.2 seconds of the preceding hit continues Fruit Combo:
 
 ```text
 multiplier = 1 + 0.30 * min(combo - 1, 8)
-fruit points = round(20 * multiplier * side weight)
+fruit points = round(20 * multiplier)
 ```
 
-This rises from 20 points to a maximum of 68 aligned points per fruit. Multiple consecutive
+This rises from 20 points to a maximum of 68 points per fruit. Multiple consecutive
 fruit can therefore exceed one dance keyframe, as intended, but missing an expired fruit resets
 only Fruit Combo. It does not reset Dance Combo or remove Dance points.
 
