@@ -1,0 +1,15 @@
+numpy==1.26.4
+# Ultralytics declares opencv-python, while LBF requires the contrib build.
+# Pin both to one compatible version and keep opencv-contrib-python installed last.
+opencv-python==4.11.0.86
+opencv-contrib-python==4.11.0.86
+ultralytics
+scikit-learn
+matplotlib
+pillow
+imageio-ffmpeg==0.6.0
+joblib
+lightgbm==4.6.0
+mediapipe==0.10.21
+# dlib-bin is a precompiled Windows wheel but exposes the standard `import dlib` API.
+dlib-bin==20.0.1

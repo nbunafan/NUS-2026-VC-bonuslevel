@@ -1,0 +1,26 @@
+# Python runtime files
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Local environments and editor files
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Generated audio and application caches
+.audio_cache/
+.ultralytics/
+Ultralytics/
+cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Generated logs and temporary outputs
+*.log
+*.tmp
+outputs/
