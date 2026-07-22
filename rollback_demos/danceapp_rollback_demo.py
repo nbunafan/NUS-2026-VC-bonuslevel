@@ -84,10 +84,6 @@ def normalize_pose(points: np.ndarray, conf: np.ndarray | None):
         valid &= np.asarray(conf, dtype=np.float32)[COMPARE_POINTS] > 0.25
     if valid.sum() < 4:
         return None, None
-    if DEMO_MODE in ("coordinate", "all"):
-        # Deliberate rollback: compare raw frame coordinates. Camera position, player distance,
-        # and framing now change the score even when the body pose is semantically identical.
-        return selected.copy(), valid
     center = selected[valid].mean(axis=0)
     shifted = selected - center
     shoulder = np.linalg.norm(pts[5] - pts[6]) if np.all(pts[[5, 6]] > 0) else 0.0
@@ -97,6 +93,28 @@ def normalize_pose(points: np.ndarray, conf: np.ndarray | None):
 
 
 def pose_similarity(ref_pose, ref_conf, cam_pose, cam_conf, tolerance=1.0):
+    if DEMO_MODE in ("coordinate", "all"):
+        # Deliberate rollback applies only to scoring. Motion/keyframe extraction still uses
+        # stable normalized geometry, otherwise the demo accidentally removes keyframes too.
+        ref = np.asarray(ref_pose, dtype=np.float32)[COMPARE_POINTS]
+        cam = np.asarray(cam_pose, dtype=np.float32)[COMPARE_POINTS]
+        valid = (ref > 0).all(axis=1) & (cam > 0).all(axis=1)
+        if ref_conf is not None:
+            valid &= np.asarray(ref_conf)[COMPARE_POINTS] > 0.25
+        if cam_conf is not None:
+            valid &= np.asarray(cam_conf)[COMPARE_POINTS] > 0.25
+        if valid.sum() < 4:
+            return None
+        ref_valid, cam_valid = ref[valid], cam[valid]
+        joint_distance = float(np.linalg.norm(ref_valid - cam_valid, axis=1).mean())
+        center_distance = float(np.linalg.norm(ref_valid.mean(axis=0) - cam_valid.mean(axis=0)))
+        ref_scale = float(np.linalg.norm(np.ptp(ref_valid, axis=0)))
+        cam_scale = float(np.linalg.norm(np.ptp(cam_valid, axis=0)))
+        scale_difference = abs(ref_scale - cam_scale)
+        # Ignore the UI tolerance control in this legacy mode. Raw coordinate, center, and
+        # apparent body-size errors are intentionally punished to expose the old limitation.
+        raw_error = joint_distance + 0.75 * center_distance + 0.50 * scale_difference
+        return float(np.clip(100.0 * np.exp(-3.0 * raw_error), 0.0, 100.0))
     ref_norm, ref_valid = normalize_pose(ref_pose, ref_conf)
     cam_norm, cam_valid = normalize_pose(cam_pose, cam_conf)
     if ref_norm is None or cam_norm is None:

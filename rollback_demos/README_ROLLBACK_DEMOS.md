@@ -12,7 +12,8 @@ python rollback_demos\rollback_continuous_scoring.py
 python rollback_demos\rollback_random_fruit.py
 ```
 
-- `coordinate_mismatch`: compares raw normalized-image coordinates without centering or body scaling.
+- `coordinate_mismatch`: scores raw normalized-image coordinates without centering or body
+  scaling. Keyframe extraction remains normalized so this demo isolates the scoring defect.
 - `no_dancer_lock`: selects the largest detected person independently on each inference frame.
 - `continuous_scoring`: adds `10%` of the current similarity every inferred frame.
 - `random_fruit`: selects left/right randomly and never converts the opposite side into a bomb.
