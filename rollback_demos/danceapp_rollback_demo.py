@@ -615,14 +615,23 @@ class PoseApp:
             if pose is not None:
                 with self.lock:
                     now = time.monotonic()
-                    # Only a new YOLO result advances the motion state. Reused poses keep video
-                    # playback smooth but must not be mistaken for repeated zero-motion frames.
-                    detected = self.update_motion_detector(pose, conf) if inferred else None
-                    is_keyframe = detected is not None and now - self.last_keyframe_time >= 0.35
+                    if DEMO_MODE in ("fixed_interval", "all"):
+                        # Deliberate rollback: sample whatever pose happens to be visible every
+                        # 0.7 seconds. It ignores motion magnitude and action completion.
+                        detected = None
+                        is_keyframe = inferred and now - self.last_keyframe_time >= 0.70
+                    else:
+                        # Improved extractor: advance only on a new inference and emit a
+                        # representative pose when the detected motion segment settles.
+                        detected = self.update_motion_detector(pose, conf) if inferred else None
+                        is_keyframe = detected is not None and now - self.last_keyframe_time >= 0.35
                     if is_keyframe:
                         self.last_keyframe_id += 1
                         self.last_keyframe_time = now
-                        scheduled_pose, scheduled_conf, activity = detected
+                        if detected is None:
+                            scheduled_pose, scheduled_conf, activity = pose, conf, 0.0
+                        else:
+                            scheduled_pose, scheduled_conf, activity = detected
                     else:
                         scheduled_pose, scheduled_conf, activity = pose, conf, 0.0
                     keyframe_id = self.last_keyframe_id if is_keyframe else -1
@@ -1062,5 +1071,5 @@ def run_demo(mode="all"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run one deliberate legacy regression for recording.")
-    parser.add_argument("--mode", choices=("coordinate", "lock", "continuous", "random_fruit", "all"), default="all")
+    parser.add_argument("--mode", choices=("coordinate", "lock", "continuous", "random_fruit", "fixed_interval", "all"), default="all")
     run_demo(parser.parse_args().mode)
