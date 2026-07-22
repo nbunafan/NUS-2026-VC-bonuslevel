@@ -26,6 +26,8 @@ python bonus_runner\metro_motion.py --camera "http://PHONE_IP:8080/video"
 ## Dependencies
 
 - `pose_utils.py`: shared pose representation and `MainDancerTracker`.
+- `danceapp.py`: analyses reference poses once in five-second groups and reuses the cached
+  group plan during playback.
 - `yolov8n-pose.pt`: model used by all Bonus entry points.
 - `models/yolov8n-pose.pt`: compatibility copy for the default `PoseEstimator` path.
 - `dance_example_1.mp4`: default dance reference video.

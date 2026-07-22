@@ -18,6 +18,12 @@ similarity = 100 * exp(-1.35 * d)
 
 ## 2. A 2.5-second action preview
 
+Before playback, the reference video is analysed once in five-second groups. Each group keeps
+at most four motion peaks, separated by at least `0.7 s`. Reference poses are cached during
+this pass. At playback time, the complete plan for a group is queued once at the group
+boundary, so the program does not repeat reference YOLO inference or search the same future
+window on every frame.
+
 Every sampled reference pose is scheduled with:
 
 ```text
@@ -35,9 +41,11 @@ line on the left; crossing that line opens the scoring window.
 
 ## 3. Sparse keyframe scoring
 
-Reference-pose motion is measured as normalized joint displacement from the preceding sampled
-pose. A motion peak above `0.16`, separated from the previous peak by at least `0.7 s`, becomes
-a keyframe. This prevents the same action from being scored repeatedly.
+Reference-pose activity combines the strongest joint motion, cumulative displacement from the
+group anchor, wrist/ankle motion, and torso rotation. Within each five-second group, candidates
+above the group's adaptive activity threshold are ranked and temporally deduplicated. This
+keeps distinct actions while preventing adjacent samples of one movement from being scored
+repeatedly.
 
 At a due keyframe:
 

@@ -234,6 +234,13 @@ class PoseApp:
         # Otherwise a 2.5-second preview can expire from the 90-frame mixed buffer before the
         # webcam reaches its scoring window, silently preventing encouragement effects.
         self.keyframe_buffer = deque(maxlen=40)
+        # Reference analysis is performed once in five-second groups. Playback reuses the
+        # cached poses and queues each group's deduplicated keyframes only at its boundary.
+        self.keyframe_group_seconds = 5.0
+        self.reference_pose_cache = {}
+        self.reference_group_plans = {}
+        self.reference_keyframe_plan = []
+        self.reference_plan_key = None
         self.next_reference_pose = None
         self.next_reference_keyframe = False
         self.previous_reference_pose = None
@@ -369,6 +376,7 @@ class PoseApp:
             self.stop_video_audio()
             self.video_path = path
             self.audio_path = None
+            self.reference_plan_key = None
             messagebox.showinfo("Video Selected", os.path.basename(path))
 
     def start_video(self):
@@ -382,7 +390,6 @@ class PoseApp:
         if not self.running_file:
             self.prepare_video_audio()
             self.running_file = True
-            self.start_video_audio()
             threading.Thread(target=self.process_video_file, daemon=True).start()
 
     def stop_video(self):
@@ -546,13 +553,92 @@ class PoseApp:
         self.previous_reference_pose = pose.copy()
         return emitted
 
+    def analyze_reference_groups(self):
+        """Analyze each five-second reference group once and cache its pose/keyframe plan.
+
+        Candidate actions are ranked by normalized motion magnitude. Temporal non-maximum
+        suppression keeps at most four distinct peaks per group and prevents neighbouring
+        samples of the same movement from becoming duplicate scoring events.
+        """
+        source = Path(self.video_path)
+        plan_key = (str(source.resolve()), source.stat().st_mtime_ns)
+        if self.reference_plan_key == plan_key and self.reference_pose_cache:
+            return True
+
+        capture = cv2.VideoCapture(str(source))
+        fps = capture.get(cv2.CAP_PROP_FPS)
+        fps = fps if 5 <= fps <= 60 else 30.0
+        infer_every = max(1, int(round(fps / 8.0)))
+        pose_cache = {}
+        candidates_by_group = {}
+        previous_by_group = {}
+        anchor_by_group = {}
+        frame_index = 0
+
+        while capture.isOpened() and self.running_file:
+            ok, frame = capture.read()
+            if not ok:
+                break
+            if frame_index % infer_every == 0:
+                _overlay, pose, conf = self.process_pose(frame, is_reference=True)
+                if pose is not None:
+                    pose = pose.copy()
+                    conf = None if conf is None else conf.copy()
+                    pose_cache[frame_index] = (pose, conf)
+                    video_time = frame_index / fps
+                    group_index = int(video_time // self.keyframe_group_seconds)
+                    previous = previous_by_group.get(group_index)
+                    anchor = anchor_by_group.setdefault(group_index, pose)
+                    if previous is not None:
+                        metrics = pose_motion_metrics(previous, pose, anchor)
+                        candidates_by_group.setdefault(group_index, []).append(
+                            (video_time, pose, conf, metrics["activity"])
+                        )
+                    previous_by_group[group_index] = pose
+            frame_index += 1
+        capture.release()
+        if not self.running_file:
+            return False
+
+        group_plans = {}
+        flat_plan = []
+        for group_index, candidates in candidates_by_group.items():
+            if not candidates:
+                continue
+            activities = np.asarray([item[3] for item in candidates], dtype=np.float32)
+            threshold = max(0.060, float(np.percentile(activities, 60)))
+            selected = []
+            for candidate in sorted(candidates, key=lambda item: item[3], reverse=True):
+                if candidate[3] < threshold:
+                    continue
+                if all(abs(candidate[0] - kept[0]) >= 0.70 for kept in selected):
+                    selected.append(candidate)
+                if len(selected) >= 4:
+                    break
+            selected.sort(key=lambda item: item[0])
+            if selected:
+                group_plans[group_index] = selected
+                flat_plan.extend(selected)
+
+        with self.lock:
+            self.reference_pose_cache = pose_cache
+            self.reference_group_plans = group_plans
+            self.reference_keyframe_plan = sorted(flat_plan, key=lambda item: item[0])
+            self.reference_plan_key = plan_key
+        return True
+
     def process_video_file(self):
+        if not self.analyze_reference_groups():
+            return
+        self.start_video_audio()
         self.cap_file = cv2.VideoCapture(self.video_path)
         fps = self.cap_file.get(cv2.CAP_PROP_FPS)
         fps = fps if 5 <= fps <= 60 else 30.0
         frame_period = 1.0 / fps
         frame_index = 0
         last_pose = last_conf = None
+        queued_group = -1
+        next_plan_index = 0
         with self.lock:
             self.reset_motion_detector()
             self.reference_buffer.clear()
@@ -570,41 +656,45 @@ class PoseApp:
                     self.reference_buffer.clear()
                     self.keyframe_buffer.clear()
                     self.last_keyframe_time = 0.0
+                frame_index = 0
+                queued_group = -1
+                next_plan_index = 0
                 continue
             # Decode every frame for smooth playback but run heavy YOLO only about 8 times
             # per second. The last skeleton is reused between inference frames.
             infer_every = max(1, int(round(fps / 8.0)))
             inferred = frame_index % infer_every == 0
             if inferred:
-                raw_frame = frame.copy()
-                _annotated, last_pose, last_conf = self.process_pose(frame, is_reference=True)
-                # Keep the reference video untouched. Future pose cards are rendered in the
-                # separate timeline below, like a Just Dance cue lane.
-                frame = raw_frame
+                cached = self.reference_pose_cache.get(frame_index)
+                if cached is not None:
+                    last_pose, last_conf = cached
+                frame = frame.copy()
             else:
                 frame = frame.copy()
             pose, conf = last_pose, last_conf
             if pose is not None:
                 with self.lock:
                     now = time.monotonic()
-                    # Only a new YOLO result advances the motion state. Reused poses keep video
-                    # playback smooth but must not be mistaken for repeated zero-motion frames.
-                    detected = self.update_motion_detector(pose, conf) if inferred else None
-                    is_keyframe = detected is not None and now - self.last_keyframe_time >= 0.35
-                    if is_keyframe:
-                        self.last_keyframe_id += 1
-                        self.last_keyframe_time = now
-                        scheduled_pose, scheduled_conf, activity = detected
-                    else:
-                        scheduled_pose, scheduled_conf, activity = pose, conf, 0.0
-                    keyframe_id = self.last_keyframe_id if is_keyframe else -1
+                    video_time = frame_index / fps
+                    group_index = int(video_time // self.keyframe_group_seconds)
+                    if group_index != queued_group:
+                        queued_group = group_index
+                        # Queue this group's complete plan once. Later playback frames only
+                        # publish continuity poses and never repeat keyframe detection.
+                        for key_time, key_pose, key_conf, activity in self.reference_group_plans.get(group_index, []):
+                            self.last_keyframe_id += 1
+                            due = now + max(0.0, key_time - video_time) + self.preview_seconds
+                            key_entry = (due, key_pose.copy(), None if key_conf is None else key_conf.copy(), True, self.last_keyframe_id, activity)
+                            self.keyframe_buffer.append(key_entry)
+                    while next_plan_index + 1 < len(self.reference_keyframe_plan) and self.reference_keyframe_plan[next_plan_index][0] < video_time:
+                        next_plan_index += 1
+                    if self.reference_keyframe_plan:
+                        self.next_reference_pose = self.reference_keyframe_plan[next_plan_index][1].copy()
+                    scheduled_pose, scheduled_conf, activity = pose, conf, 0.0
                     due_time = now + self.preview_seconds
-                    entry = (due_time, scheduled_pose.copy(), None if scheduled_conf is None else scheduled_conf.copy(), is_keyframe, keyframe_id, activity)
+                    entry = (due_time, scheduled_pose.copy(), None if scheduled_conf is None else scheduled_conf.copy(), False, -1, activity)
                     self.reference_buffer.append(entry)
-                    if is_keyframe:
-                        self.keyframe_buffer.append(entry)
-                    self.next_reference_pose = scheduled_pose.copy()
-                    self.next_reference_keyframe = is_keyframe
+                    self.next_reference_keyframe = False
             with self.lock:
                 self.latest_ref_frame = frame
                 self.ref_frame_version += 1
