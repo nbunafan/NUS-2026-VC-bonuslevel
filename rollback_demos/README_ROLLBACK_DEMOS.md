@@ -17,5 +17,5 @@ python rollback_demos\rollback_random_fruit.py
 - `continuous_scoring`: adds `10%` of the current similarity every inferred frame.
 - `random_fruit`: selects left/right randomly and never converts the opposite side into a bomb.
 
-Each window displays a red `ROLLBACK DEMO` banner naming the active regression. Use the normal
-`danceapp.py` to record the improved behavior with the same camera and reference video.
+Use the normal `danceapp.py` to record the improved behavior with the same camera and reference
+video. The rollback windows intentionally retain the same visual layout for a fair comparison.

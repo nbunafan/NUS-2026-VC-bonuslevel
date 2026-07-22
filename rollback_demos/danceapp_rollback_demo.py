@@ -320,17 +320,6 @@ class PoseApp:
         header.pack(fill=tk.X, pady=(0, 12))
         ttk.Label(header, text="Dance Motion Lab", style="Title.TLabel").pack(side=tk.LEFT)
         ttk.Label(header, text="YOLOv8 pose matching with reaction-delay compensation", style="Sub.TLabel").pack(side=tk.LEFT, padx=16, pady=(11, 0))
-        demo_names = {
-            "coordinate": "RAW COORDINATE MISMATCH",
-            "lock": "NO MAIN DANCER LOCK",
-            "continuous": "CONTINUOUS PER-FRAME SCORING",
-            "random_fruit": "RANDOM FRUIT SPAWNING",
-            "all": "ALL FOUR LEGACY PROBLEMS",
-        }
-        tk.Label(
-            outer, text=f"ROLLBACK DEMO  |  {demo_names.get(DEMO_MODE, DEMO_MODE.upper())}",
-            bg="#762d32", fg="#fff4f2", font=("Segoe UI Semibold", 11), pady=7,
-        ).pack(fill=tk.X, pady=(0, 10))
         difficulty = tk.Frame(header, bg=BG)
         difficulty.pack(side=tk.RIGHT, pady=(3, 0))
         tk.Label(difficulty, text="POSE TOLERANCE", bg=BG, fg=MUTED, font=("Segoe UI Semibold", 9)).pack(side=tk.LEFT, padx=(0, 7))
