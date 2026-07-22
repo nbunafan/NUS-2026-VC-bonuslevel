@@ -617,9 +617,9 @@ class PoseApp:
                     now = time.monotonic()
                     if DEMO_MODE in ("fixed_interval", "all"):
                         # Deliberate rollback: sample whatever pose happens to be visible every
-                        # 0.7 seconds. It ignores motion magnitude and action completion.
+                        # 2.0 seconds. It ignores motion magnitude and action completion.
                         detected = None
-                        is_keyframe = inferred and now - self.last_keyframe_time >= 0.70
+                        is_keyframe = inferred and now - self.last_keyframe_time >= 2.0
                     else:
                         # Improved extractor: advance only on a new inference and emit a
                         # representative pose when the detected motion segment settles.

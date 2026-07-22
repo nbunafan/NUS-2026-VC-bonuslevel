@@ -18,7 +18,7 @@ python rollback_demos\rollback_fixed_interval_keyframes.py
 - `no_dancer_lock`: selects the largest detected person independently on each inference frame.
 - `continuous_scoring`: adds `10%` of the current similarity every inferred frame.
 - `random_fruit`: selects left/right randomly and never converts the opposite side into a bomb.
-- `fixed_interval_keyframes`: captures the current pose every `0.7 seconds`, even during a
+- `fixed_interval_keyframes`: captures the current pose every `2.0 seconds`, even during a
   transition or while the dancer is stationary, without measuring motion magnitude.
 
 Use the normal `danceapp.py` to record the improved behavior with the same camera and reference
