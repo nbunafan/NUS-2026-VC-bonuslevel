@@ -2,9 +2,7 @@ from __future__ import annotations
 
 """Convert normalized MediaPipe body landmarks into debounced game commands."""
 
-import math
 import time
-from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -13,8 +11,6 @@ import numpy as np
 LEFT_SHOULDER, RIGHT_SHOULDER = 5, 6
 LEFT_WRIST, RIGHT_WRIST = 9, 10
 LEFT_HIP, RIGHT_HIP = 11, 12
-LEFT_KNEE, RIGHT_KNEE = 13, 14
-LEFT_ANKLE, RIGHT_ANKLE = 15, 16
 
 
 @dataclass(frozen=True)
@@ -34,44 +30,32 @@ def _visible(points: np.ndarray, confidence: np.ndarray, indices, threshold=0.30
     )
 
 
-def _joint_angle(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    first = a - b
-    second = c - b
-    denominator = max(float(np.linalg.norm(first) * np.linalg.norm(second)), 1e-6)
-    cosine = float(np.clip(np.dot(first, second) / denominator, -1.0, 1.0))
-    return math.degrees(math.acos(cosine))
-
-
 class GestureController:
     """Convert normalized COCO body keypoints into discrete game actions.
 
-    The detector first learns the player's neutral hip height, torso length and shoulder
-    width. All thresholds are relative to that body scale, which is more robust than using
-    fixed pixels when the phone distance or camera resolution changes. Edge-triggering and
-    per-action cooldowns prevent one held pose from generating commands every frame.
+    The detector first learns the player's torso length and shoulder width. All thresholds
+    are relative to that body scale, which is more robust than fixed pixels when the phone
+    distance or camera resolution changes. Jump fires on the first reliable frame where
+    both wrists are above their corresponding shoulders. While that pose is held, periodic
+    requests allow another jump after landing without lowering the arms first.
     """
 
-    def __init__(self, calibration_frames: int = 36):
+    def __init__(self, calibration_frames: int = 18):
         self.calibration_frames = calibration_frames
-        self.calibration_samples: list[tuple[float, float, float]] = []
-        self.baseline: tuple[float, float, float] | None = None
+        self.calibration_samples: list[tuple[float, float]] = []
+        self.baseline: tuple[float, float] | None = None
         self.previous_left_out = False
         self.previous_right_out = False
-        self.previous_jump = False
-        self.previous_smoothed_hip: float | None = None
-        self.jump_candidate_frames = 0
         self.last_action_time = {"LEFT": 0.0, "RIGHT": 0.0, "JUMP": 0.0}
-        # Jumping is edge-triggered rather than time-limited, so a player can jump again as
-        # soon as the detector sees a new rise after the previous jump has ended.
-        self.cooldown = {"LEFT": 0.55, "RIGHT": 0.55, "JUMP": 0.0}
-        self.hip_history = deque(maxlen=5)
+        # Match repeat requests to the 0.86-second game jump. This prevents airborne resets
+        # while allowing a held pose to start the next jump as soon as the runner lands.
+        self.cooldown = {"LEFT": 0.55, "RIGHT": 0.55, "JUMP": 0.86}
 
     def reset_calibration(self) -> None:
         self.calibration_samples.clear()
         self.baseline = None
-        self.hip_history.clear()
-        self.previous_smoothed_hip = None
-        self.jump_candidate_frames = 0
+        self.previous_left_out = False
+        self.previous_right_out = False
 
     @property
     def calibrated(self) -> bool:
@@ -89,44 +73,51 @@ class GestureController:
 
         points = np.asarray(points, dtype=np.float32)
         confidence = np.asarray(confidence, dtype=np.float32)
-        core = [LEFT_SHOULDER, RIGHT_SHOULDER, LEFT_HIP, RIGHT_HIP]
-        if not _visible(points, confidence, core):
+        shoulders = [LEFT_SHOULDER, RIGHT_SHOULDER]
+        core = shoulders + [LEFT_HIP, RIGHT_HIP]
+        shoulders_visible = _visible(points, confidence, shoulders)
+        left_hip_visible = _visible(points, confidence, [LEFT_HIP])
+        right_hip_visible = _visible(points, confidence, [RIGHT_HIP])
+        # The pelvis is needed only while learning body scale. After calibration, a two-hand
+        # jump depends on shoulders and wrists, so a hip briefly leaving a laptop-camera frame
+        # must not block an otherwise clear command. Lateral gestures still validate their
+        # corresponding hip separately below.
+        if not shoulders_visible:
             return GestureResult(None, "SHOW FULL BODY", self._progress(), 0.0)
 
         shoulder_mid = points[[LEFT_SHOULDER, RIGHT_SHOULDER]].mean(axis=0)
-        hip_mid = points[[LEFT_HIP, RIGHT_HIP]].mean(axis=0)
         shoulder_width = float(np.linalg.norm(points[LEFT_SHOULDER] - points[RIGHT_SHOULDER]))
-        torso_length = float(np.linalg.norm(shoulder_mid - hip_mid))
-        if shoulder_width < 0.025 or torso_length < 0.025:
+        if shoulder_width < 0.025:
             return GestureResult(None, "MOVE CLOSER", self._progress(), 0.0)
 
         if not self.calibrated:
-            self.calibration_samples.append((float(hip_mid[1]), torso_length, shoulder_width))
+            if not left_hip_visible or not right_hip_visible:
+                return GestureResult(None, "SHOW FULL BODY", self._progress(), 0.0)
+            hip_mid = points[[LEFT_HIP, RIGHT_HIP]].mean(axis=0)
+            torso_length = float(np.linalg.norm(shoulder_mid - hip_mid))
+            hip_width = float(np.linalg.norm(points[LEFT_HIP] - points[RIGHT_HIP]))
+            if torso_length < 0.025 or hip_width < 0.015:
+                return GestureResult(None, "MOVE CLOSER", self._progress(), 0.0)
+            self.calibration_samples.append((torso_length, shoulder_width))
             if len(self.calibration_samples) >= self.calibration_frames:
                 samples = np.asarray(self.calibration_samples, dtype=np.float32)
                 self.baseline = tuple(np.median(samples, axis=0).tolist())
             return GestureResult(None, "STAND STILL", self._progress(), float(np.mean(confidence[core])))
 
-        baseline_hip, baseline_torso, baseline_shoulder = self.baseline
-        self.hip_history.append(float(hip_mid[1]))
-        smoothed_hip = float(np.mean(self.hip_history))
+        baseline_torso, baseline_shoulder = self.baseline
 
-        # Require both a substantial hip rise and upward velocity. A hand wave may perturb the
-        # detector box by a few pixels, but it cannot satisfy this two-part body-motion test.
-        hip_rise = baseline_hip - smoothed_hip
-        hip_velocity = 0.0 if self.previous_smoothed_hip is None else self.previous_smoothed_hip - smoothed_hip
-        jump_started = (
-            hip_rise > 0.16 * baseline_torso
-            and hip_velocity > 0.0015
-            and torso_length > 0.75 * baseline_torso
+        wrists_visible = _visible(
+            points,
+            confidence,
+            [LEFT_WRIST, RIGHT_WRIST, LEFT_SHOULDER, RIGHT_SHOULDER],
+            threshold=0.25,
         )
-        jump_still_elevated = hip_rise > 0.16 * baseline_torso and torso_length > 0.75 * baseline_torso
-        jump_candidate = jump_started or (self.jump_candidate_frames > 0 and jump_still_elevated)
-        self.jump_candidate_frames = self.jump_candidate_frames + 1 if jump_candidate else max(0, self.jump_candidate_frames - 1)
-        # One confirmed rising sample is enough for responsive game control; the velocity
-        # requirement above still rejects most arm-only detector jitter.
-        jump_pose = self.jump_candidate_frames >= 1
-        self.previous_smoothed_hip = smoothed_hip
+        # Normalized image y grows downward. Direct shoulder comparison avoids head-point
+        # estimation and a second confirmation frame, removing the two main latency sources.
+        both_hands_raised = wrists_visible and (
+            points[LEFT_WRIST, 1] < points[LEFT_SHOULDER, 1]
+            and points[RIGHT_WRIST, 1] < points[RIGHT_SHOULDER, 1]
+        )
 
         left_out = False
         if _visible(points, confidence, [LEFT_WRIST, LEFT_SHOULDER, LEFT_HIP]):
@@ -142,14 +133,14 @@ class GestureController:
             )
 
         candidates = []
-        if jump_pose and not self.previous_jump:
+        if both_hands_raised:
             candidates.append("JUMP")
+        # During a two-hand raise, horizontal displacement must not leak into a lane change.
         elif left_out and not self.previous_left_out:
             candidates.append("LEFT")
         elif right_out and not self.previous_right_out:
             candidates.append("RIGHT")
 
-        self.previous_jump = jump_pose
         self.previous_left_out = left_out
         self.previous_right_out = right_out
 
@@ -160,8 +151,9 @@ class GestureController:
                 action = candidate
                 break
 
-        state = action or ("JUMPING" if jump_pose else "READY")
-        return GestureResult(action, state, 1.0, float(np.mean(confidence[core])))
+        state = action or ("HANDS UP" if both_hands_raised else "READY")
+        visible_core = shoulders + ([LEFT_HIP] if left_hip_visible else []) + ([RIGHT_HIP] if right_hip_visible else [])
+        return GestureResult(action, state, 1.0, float(np.mean(confidence[visible_core])))
 
     def _progress(self) -> float:
         if self.calibrated:
